@@ -1,8 +1,8 @@
 -- Mage Portal Assistant for Turtle Wow (1.12 client)
--- Version 4.4.4 - Tracks party joins but still requires /portal to cast
+-- Version 4.4.7 - Fixed chat window issues
 
 MPA = {
-    version = "4.4.4",
+    version = "4.4.7",
     settings = {
         enabled = true,
         keywords = {
@@ -14,23 +14,24 @@ MPA = {
             ["orgrimmar"] = "Portal: Orgrimmar",
             ["thunder bluff"] = "Portal: Thunder Bluff"
         },
-        -- Destination synonyms and common misspellings
         destinationAliases = {
             ["undercity"] = {"uc", "under", "underc", "undercit", "undercityy", "undercityyy", "udercity", "undercitty"},
             ["orgrimmar"] = {"org", "og", "orgri", "orgrim", "orgrimar", "orgrimmr", "orgrimar", "orgrimma", "orgimmar", "orgimmar"},
             ["thunder bluff"] = {"tb", "tbluff", "thunder", "bluff", "thunderbluff", "thunder bluf", "thunder blu", "thunderb", "thundr bluff", "thunder bloff"}
         },
-        cooldownTime = 60, -- 60 seconds cooldown between portals for same player
-        chatCooldown = 10  -- 10 seconds cooldown between identical chat messages
+        cooldownTime = 60,
+        chatCooldown = 10
     },
     debug = true,
-    portalRequests = {}, -- Table to track all active portal requests
-    playerCooldowns = {}, -- Table to track player cooldowns
-    lastChatMessages = {}, -- Table to track last chat messages and their timestamps
-    currentPortalTarget = nil -- Tracks who we're currently portaling
+    portalRequests = {},
+    playerCooldowns = {},
+    lastChatMessages = {},
+    currentPortalTarget = nil,
+    portalChatLog = {},
+    chatFrame = nil,
+    chatFrameCreated = false
 }
 
--- Load saved settings
 if MPASettings then
     for k,v in pairs(MPASettings) do
         MPA.settings[k] = v
@@ -68,11 +69,9 @@ local function isPortalRequest(message)
     return false
 end
 
--- Helper function to check for destination matches
 local function matchDestination(message)
     message = string.lower(message)
     
-    -- First check for invalid destinations
     local invalidDests = {
         "ironforge", "if", "stonard", "hyjal", "stormwind", "sw", 
         "darnassus", "dar", "exodar", "shattrath", "dalaran"
@@ -86,18 +85,16 @@ local function matchDestination(message)
                     DEFAULT_CHAT_FRAME:AddMessage(msg)
                 end
             end
-            return nil -- Return nil immediately for invalid destinations
+            return nil
         end
     end
     
-    -- Then check exact matches
     for dest in pairs(MPA.settings.portalSpells) do
         if string.find(message, dest) then
             return dest
         end
     end
     
-    -- Then check aliases
     for dest, aliases in pairs(MPA.settings.destinationAliases) do
         for _, alias in ipairs(aliases) do
             if string.find(message, alias) then
@@ -109,11 +106,129 @@ local function matchDestination(message)
     return nil
 end
 
+local function CreateChatDisplayFrame()
+    if MPA.chatFrameCreated then return end
+    
+    local frame = CreateFrame("Frame", "MPAChatDisplayFrame", UIParent)
+    frame:SetWidth(380)
+    frame:SetHeight(250)
+    frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    frame:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    frame:SetBackdropColor(0.1, 0.1, 0.2, 0.9)
+    frame:SetBackdropBorderColor(0.5, 0.5, 0.5)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", function() frame:StartMoving() end)
+    frame:SetScript("OnDragStop", function() frame:StopMovingOrSizing() end)
+    frame:SetScript("OnMouseDown", function() end) -- Prevent error when clicking
+    frame:Hide()
+    
+    -- Title
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", frame, "TOP", 0, -12)
+    title:SetText("Portal Requests in /say /yell")
+    title:SetTextColor(1, 1, 1)
+    
+    -- Close button
+    local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
+    closeButton:SetScript("OnClick", function() frame:Hide() end)
+    
+    -- Scroll frame
+    local scrollFrame = CreateFrame("ScrollFrame", "MPAChatScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -30)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -26, 8)
+    
+    local scrollChild = CreateFrame("Frame", "MPAChatScrollChild", scrollFrame)
+    scrollChild:SetWidth(350)
+    scrollChild:SetHeight(1)
+    scrollFrame:SetScrollChild(scrollChild)
+    
+    frame.scrollFrame = scrollFrame
+    frame.scrollChild = scrollChild
+    
+    MPA.chatFrame = frame
+    MPA.chatFrameCreated = true
+end
+
+local function UpdateChatDisplay()
+    if not MPA.chatFrame or not MPA.chatFrame:IsShown() then return end
+    
+    local scrollChild = MPA.chatFrame.scrollChild
+    
+    -- Clear previous entries
+    local children = {scrollChild:GetChildren()}
+    for i=1, table.getn(children) do
+        children[i]:Hide()
+    end
+    
+    local totalHeight = 0
+    local entryHeight = 40
+    
+    for i=1, table.getn(MPA.portalChatLog) do
+        local entry = MPA.portalChatLog[i]
+        local entryFrame = getglobal("MPAChatEntry"..i) or CreateFrame("Frame", "MPAChatEntry"..i, scrollChild)
+        entryFrame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -((i-1)*entryHeight))
+        entryFrame:SetWidth(340)
+        entryFrame:SetHeight(entryHeight)
+        
+        if not entryFrame.initialized then
+            -- Player name
+            local nameText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            nameText:SetPoint("TOPLEFT", entryFrame, "TOPLEFT", 5, -5)
+            nameText:SetWidth(100)
+            nameText:SetJustifyH("LEFT")
+            nameText:SetTextColor(1, 0.82, 0)
+            entryFrame.nameText = nameText
+            
+            -- Message text
+            local msgText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            msgText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
+            msgText:SetWidth(150)
+            msgText:SetJustifyH("LEFT")
+            msgText:SetTextColor(1, 1, 1)
+            entryFrame.msgText = msgText
+            
+            -- Invite button
+            local inviteButton = CreateFrame("Button", nil, entryFrame, "UIPanelButtonTemplate")
+            inviteButton:SetPoint("LEFT", msgText, "RIGHT", 5, 0)
+            inviteButton:SetWidth(60)
+            inviteButton:SetHeight(20)
+            inviteButton:SetText("Invite")
+            inviteButton:SetScript("OnClick", function()
+                InviteByName(entry.player)
+                if MPA.debug then
+                    DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Invited "..entry.player.." from chat log")
+                end
+            end)
+            
+            entryFrame.initialized = true
+        end
+        
+        entryFrame.nameText:SetText(entry.player)
+        entryFrame.msgText:SetText(string.sub(entry.message, 1, 25))
+        entryFrame:Show()
+        
+        totalHeight = i * entryHeight
+    end
+    
+    scrollChild:SetHeight(totalHeight)
+    MPA.chatFrame.scrollFrame:UpdateScrollChildRect()
+    
+    -- Auto-scroll to top
+    MPA.chatFrame.scrollFrame:SetVerticalScroll(0)
+end
+
 local function OnEvent()
     if not MPA.settings.enabled then return end
     
     if event == "TRADE_ACCEPT_UPDATE" then
-        -- Both player and target have accepted the trade
         if arg1 == 1 and arg2 == 1 then
             local msg = "Thanks for the tip!!"
             if canSendMessage(msg, "PARTY") then
@@ -124,10 +239,8 @@ local function OnEvent()
     end
     
     if event == "PARTY_MEMBERS_CHANGED" then
-        -- Check if any invited players have joined the party
         for playerName, request in pairs(MPA.portalRequests) do
             if not request.inParty then
-                -- Check if player is now in party
                 for i = 1, GetNumPartyMembers() do
                     if UnitName("party"..i) == playerName then
                         request.inParty = true
@@ -136,14 +249,6 @@ local function OnEvent()
                             local msg = "MPA Debug: "..playerName.." has joined the party"
                             if canSendMessage(msg) then
                                 DEFAULT_CHAT_FRAME:AddMessage(msg)
-                            end
-                        end
-                        
-                        -- Notify player they're ready for portal (but don't cast automatically)
-                        if request.destination then
-                            --local msg = playerName..", type /portal when you're ready for your "..request.destination.." portal!"
-                            if canSendMessage(msg, "PARTY") then
-                                SendChatMessage(msg, "PARTY")
                             end
                         end
                         break
@@ -165,7 +270,6 @@ local function OnEvent()
             end
         end
         
-        -- Check if player is on cooldown
         if MPA.playerCooldowns[playerName] and (GetTime() - MPA.playerCooldowns[playerName] < MPA.settings.cooldownTime) then
             local remaining = math.floor(MPA.settings.cooldownTime - (GetTime() - MPA.playerCooldowns[playerName]))
             local msg = "Please wait "..remaining.." more seconds before requesting another portal."
@@ -175,19 +279,14 @@ local function OnEvent()
             return
         end
         
-        -- First check if this is a portal request
         if isPortalRequest(message) then
-            -- Check for destination in the initial message
             local dest = matchDestination(message)
             
-            -- If destination was specified but not valid, ignore the request
             if dest == nil and string.find(message, "port") then
-                -- Check if any invalid destination was mentioned
                 local invalidDestFound = false
                 local words = {}
                 for word in string.gfind(message, "%a+") do
                     word = string.lower(word)
-                    -- If word looks like a potential destination but not in our list
                     if (word == "ironforge" or word == "stonard" or word == "hyjal" or word == "stormwind" or word == "darnassus" or 
                         word == "if" or word == "sw" or word == "dar") then
                         invalidDestFound = true
@@ -202,7 +301,7 @@ local function OnEvent()
                             DEFAULT_CHAT_FRAME:AddMessage(msg)
                         end
                     end
-                    return -- Ignore the request completely
+                    return
                 end
             end
             
@@ -216,7 +315,6 @@ local function OnEvent()
             
             InviteByName(playerName)
             
-            -- Initialize or update this player's request
             MPA.portalRequests[playerName] = {
                 player = playerName,
                 destination = dest,
@@ -256,12 +354,9 @@ local function OnEvent()
         local message = arg1
         local playerName = arg2
         
-        -- Check if we have a request from this player
         if MPA.portalRequests[playerName] and not MPA.portalRequests[playerName].completed then
-            -- Mark that they're now in party (if not already marked)
             MPA.portalRequests[playerName].inParty = true
             
-            -- Check if player is on cooldown
             if MPA.playerCooldowns[playerName] and (GetTime() - MPA.playerCooldowns[playerName] < MPA.settings.cooldownTime) then
                 local remaining = math.floor(MPA.settings.cooldownTime - (GetTime() - MPA.playerCooldowns[playerName]))
                 local msg = playerName..", please wait "..remaining.." more seconds before requesting another portal."
@@ -275,12 +370,7 @@ local function OnEvent()
             local dest = matchDestination(message)
             if dest then
                 MPA.portalRequests[playerName].destination = dest
-                --local msg = "Ok, "..dest.."! Type /portal when ready."
-                if canSendMessage(msg, "PARTY") then
-                    SendChatMessage(msg, "PARTY")
-                end
             else
-                -- Unknown destination requested
                 local validDests = ""
                 for dest in pairs(MPA.settings.portalSpells) do
                     if validDests ~= "" then
@@ -294,14 +384,38 @@ local function OnEvent()
                 end
             end
         end
+    elseif event == "CHAT_MSG_SAY" or event == "CHAT_MSG_YELL" then
+        local message = arg1
+        local playerName = arg2
+        
+        if isPortalRequest(message) then
+            table.insert(MPA.portalChatLog, 1, {
+                player = playerName,
+                message = message,
+                timestamp = GetTime()
+            })
+            
+            if table.getn(MPA.portalChatLog) > 10 then
+                table.remove(MPA.portalChatLog, 11)
+            end
+            
+            if MPA.chatFrame and MPA.chatFrame:IsShown() then
+                UpdateChatDisplay()
+            end
+            
+            if MPA.debug then
+                local msg = "MPA Debug: Detected portal request in /say or /yell from "..playerName
+                if canSendMessage(msg) then
+                    DEFAULT_CHAT_FRAME:AddMessage(msg)
+                end
+            end
+        end
     end
 end
 
 local function PortalCommand()
-    -- Unconditionally accept trades
     AcceptTrade()
     
-    -- First check if we're currently handling a portal
     if MPA.currentPortalTarget and MPA.portalRequests[MPA.currentPortalTarget] then
         local request = MPA.portalRequests[MPA.currentPortalTarget]
         if request.completed then
@@ -315,7 +429,6 @@ local function PortalCommand()
         end
     end
     
-    -- Find the next player who needs a portal
     local nextPlayer = nil
     for playerName, request in pairs(MPA.portalRequests) do
         if request.destination and not request.completed and request.inParty then
@@ -325,7 +438,6 @@ local function PortalCommand()
     end
     
     if not nextPlayer then
-        -- Check party members for new requests
         if GetNumPartyMembers() == 0 then
             local msg = "You need to be in a party first."
             if canSendMessage(msg) then
@@ -334,10 +446,8 @@ local function PortalCommand()
             return
         end
         
-        -- Check the last party member
         local lastMember = UnitName("party"..GetNumPartyMembers())
         
-        -- Check if player is on cooldown
         if MPA.playerCooldowns[lastMember] and (GetTime() - MPA.playerCooldowns[lastMember] < MPA.settings.cooldownTime) then
             local remaining = math.floor(MPA.settings.cooldownTime - (GetTime() - MPA.playerCooldowns[lastMember]))
             local msg = lastMember.." must wait "..remaining.." more seconds before requesting another portal."
@@ -347,7 +457,6 @@ local function PortalCommand()
             return
         end
         
-        -- Initialize a new request for this player
         MPA.portalRequests[lastMember] = {
             player = lastMember,
             destination = nil,
@@ -370,7 +479,6 @@ local function PortalCommand()
         return
     end
     
-    -- We have a player who needs a portal
     local request = MPA.portalRequests[nextPlayer]
     MPA.currentPortalTarget = nextPlayer
     
@@ -381,17 +489,14 @@ local function PortalCommand()
             DEFAULT_CHAT_FRAME:AddMessage(msg)
         end
         
-        -- Send final notification to player
         if canSendMessage(msg, "WHISPER") then
             SendChatMessage(msg, "WHISPER", nil, nextPlayer)
         end
         
-        -- Set cooldown for this player
         MPA.playerCooldowns[nextPlayer] = GetTime()
         
         CastSpellByName(spellName)
         
-        -- Mark request as completed
         request.completed = true
     end
 end
@@ -423,18 +528,28 @@ local function SlashHandler(msg)
         if canSendMessage(msg) then
             DEFAULT_CHAT_FRAME:AddMessage(msg)
         end
+    elseif msg == "show" then
+        if not MPA.chatFrameCreated then
+            CreateChatDisplayFrame()
+        end
+        MPA.chatFrame:Show()
+        UpdateChatDisplay()
+    elseif msg == "hide" then
+        if MPA.chatFrame then
+            MPA.chatFrame:Hide()
+        end
     else
-        -- If no recognized command, treat as portal request
         PortalCommand()
     end
 end
 
--- Initialize
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("CHAT_MSG_WHISPER")
 frame:RegisterEvent("CHAT_MSG_PARTY")
 frame:RegisterEvent("TRADE_ACCEPT_UPDATE")
 frame:RegisterEvent("PARTY_MEMBERS_CHANGED")
+frame:RegisterEvent("CHAT_MSG_SAY")
+frame:RegisterEvent("CHAT_MSG_YELL")
 frame:SetScript("OnEvent", OnEvent)
 
 SLASH_MPA1 = "/mpa"
@@ -447,8 +562,10 @@ local msg1 = "MagePortalAssistant "..MPA.version.." loaded. Commands:"
 local msg2 = "/mpa on|off - Toggle addon"
 local msg3 = "/mpa debug on|off - Toggle debug"
 local msg4 = "/portal - Ask party member where to portal"
+local msg5 = "/mpa show|hide - Show/hide portal request window"
 
 if canSendMessage(msg1) then DEFAULT_CHAT_FRAME:AddMessage(msg1) end
 if canSendMessage(msg2) then DEFAULT_CHAT_FRAME:AddMessage(msg2) end
 if canSendMessage(msg3) then DEFAULT_CHAT_FRAME:AddMessage(msg3) end
 if canSendMessage(msg4) then DEFAULT_CHAT_FRAME:AddMessage(msg4) end
+if canSendMessage(msg5) then DEFAULT_CHAT_FRAME:AddMessage(msg5) end
