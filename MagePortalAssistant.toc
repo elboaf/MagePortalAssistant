@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: Mage Portal Assistant
+## Notes: Automates party invites for portal requests via whispers
+## Author: YourName
+## Version: 1.0
+## SavedVariables: MPASettings
+
+MagePortalAssistant.lua
