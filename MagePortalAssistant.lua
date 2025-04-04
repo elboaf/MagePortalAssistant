@@ -1,8 +1,8 @@
 -- Mage Portal Assistant for Turtle Wow (1.12 client)
--- Version 4.4.7 - Fixed chat window issues
+-- Version 4.5.4 - Wider frame (900px), Clear All button, full message display
 
 MPA = {
-    version = "4.4.7",
+    version = "4.5.4",
     settings = {
         enabled = true,
         keywords = {
@@ -22,7 +22,7 @@ MPA = {
         cooldownTime = 60,
         chatCooldown = 10
     },
-    debug = true,
+    debug = false,
     portalRequests = {},
     playerCooldowns = {},
     lastChatMessages = {},
@@ -38,6 +38,89 @@ if MPASettings then
     end
 else
     MPASettings = MPA.settings
+end
+
+local function UpdateChatDisplay()
+    if not MPA.chatFrame or not MPA.chatFrame:IsShown() then return end
+    
+    local scrollChild = MPA.chatFrame.scrollChild
+    local scrollFrame = MPA.chatFrame.scrollFrame
+    
+    local children = {scrollChild:GetChildren()}
+    for i=1, table.getn(children) do
+        children[i]:Hide()
+    end
+    
+    local totalHeight = 0
+    local entryHeight = 40
+    
+    if table.getn(MPA.portalChatLog) == 0 then
+        local noEntriesText = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        noEntriesText:SetPoint("CENTER", scrollChild, "CENTER", 0, 0)
+        noEntriesText:SetText("")
+        noEntriesText:SetTextColor(1, 1, 1)
+        totalHeight = entryHeight
+    else
+        for i=1, table.getn(MPA.portalChatLog) do
+            local entry = MPA.portalChatLog[i]
+            local entryFrame = getglobal("MPAChatEntry"..i) or CreateFrame("Frame", "MPAChatEntry"..i, scrollChild)
+            entryFrame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -((i-1)*entryHeight))
+            entryFrame:SetWidth(860)
+            entryFrame:SetHeight(entryHeight)
+            
+            if not entryFrame.initialized then
+                local nameText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                nameText:SetPoint("TOPLEFT", entryFrame, "TOPLEFT", 5, -5)
+                nameText:SetWidth(120)
+                nameText:SetJustifyH("LEFT")
+                nameText:SetTextColor(1, 0.82, 0)
+                entryFrame.nameText = nameText
+                
+                local msgText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                msgText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
+                msgText:SetWidth(600)
+                msgText:SetJustifyH("LEFT")
+                msgText:SetTextColor(1, 1, 1)
+                entryFrame.msgText = msgText
+                
+                local inviteButton = CreateFrame("Button", nil, entryFrame, "UIPanelButtonTemplate")
+                inviteButton:SetPoint("LEFT", msgText, "RIGHT", 5, 0)
+                inviteButton:SetWidth(60)
+                inviteButton:SetHeight(20)
+                inviteButton:SetText("Invite")
+                
+                inviteButton.playerToInvite = entry.player
+                
+                inviteButton:SetScript("OnClick", function()
+                    local playerName = inviteButton.playerToInvite
+                    InviteByName(playerName)
+                    if MPA.debug then
+                        DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Invited "..playerName.." from chat log")
+                    end
+                end)
+                
+                entryFrame.initialized = true
+            else
+                entryFrame.nameText:SetText(entry.player)
+                entryFrame.msgText:SetText(entry.message)
+                for _, child in ipairs({entryFrame:GetChildren()}) do
+                    if child:GetObjectType() == "Button" and child:GetText() == "Invite" then
+                        child.playerToInvite = entry.player
+                    end
+                end
+            end
+            
+            entryFrame:Show()
+            totalHeight = i * entryHeight
+        end
+    end
+    
+    scrollChild:SetHeight(totalHeight)
+    
+    local scrollBar = scrollFrame.scrollBar
+    scrollBar:SetMinMaxValues(0, math.max(0, totalHeight - scrollFrame:GetHeight()))
+    scrollBar:SetValue(0)
+    scrollFrame:SetVerticalScroll(0)
 end
 
 local function canSendMessage(message, channel)
@@ -107,10 +190,10 @@ local function matchDestination(message)
 end
 
 local function CreateChatDisplayFrame()
-    if MPA.chatFrameCreated then return end
+    if MPA.chatFrame then return end
     
     local frame = CreateFrame("Frame", "MPAChatDisplayFrame", UIParent)
-    frame:SetWidth(380)
+    frame:SetWidth(900)
     frame:SetHeight(250)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
@@ -126,108 +209,78 @@ local function CreateChatDisplayFrame()
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", function() frame:StartMoving() end)
     frame:SetScript("OnDragStop", function() frame:StopMovingOrSizing() end)
-    frame:SetScript("OnMouseDown", function() end) -- Prevent error when clicking
+    frame:SetScript("OnMouseDown", function() end)
     frame:Hide()
     
-    -- Title
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", frame, "TOP", 0, -12)
-    title:SetText("Portal Requests in /say /yell")
+    title:SetText("Portal Requests")
     title:SetTextColor(1, 1, 1)
     
-    -- Close button
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
+    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -90, -4)
     closeButton:SetScript("OnClick", function() frame:Hide() end)
     
-    -- Scroll frame
-    local scrollFrame = CreateFrame("ScrollFrame", "MPAChatScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    local clearButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    clearButton:SetPoint("TOPRIGHT", closeButton, "TOPLEFT", -5, 0)
+    clearButton:SetWidth(80)
+    clearButton:SetHeight(20)
+    clearButton:SetText("Clear All")
+    clearButton:SetScript("OnClick", function()
+        MPA.portalChatLog = {}
+        UpdateChatDisplay()
+        if MPA.debug then
+            DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Cleared all portal requests.")
+        end
+    end)
+    
+    local scrollFrame = CreateFrame("ScrollFrame", nil, frame)
     scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -30)
     scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -26, 8)
     
-    local scrollChild = CreateFrame("Frame", "MPAChatScrollChild", scrollFrame)
-    scrollChild:SetWidth(350)
+    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetWidth(870)
     scrollChild:SetHeight(1)
     scrollFrame:SetScrollChild(scrollChild)
     
+    local scrollBar = CreateFrame("Slider", nil, scrollFrame, "UIPanelScrollBarTemplate")
+    scrollBar:SetPoint("TOPLEFT", scrollFrame, "TOPRIGHT", -20, -16)
+    scrollBar:SetPoint("BOTTOMRIGHT", scrollFrame, "BOTTOMRIGHT", -8, 16)
+    scrollBar:SetMinMaxValues(0, 100)
+    scrollBar:SetValueStep(1)
+    scrollBar:SetValue(0)
+    scrollBar:SetWidth(16)
+    
+    local scrollUp = CreateFrame("Button", nil, scrollBar, "UIPanelScrollUpButtonTemplate")
+    scrollUp:SetPoint("BOTTOM", scrollBar, "TOP")
+    
+    local scrollDown = CreateFrame("Button", nil, scrollBar, "UIPanelScrollDownButtonTemplate")
+    scrollDown:SetPoint("TOP", scrollBar, "BOTTOM")
+    
+    scrollFrame.scrollBar = scrollBar
     frame.scrollFrame = scrollFrame
     frame.scrollChild = scrollChild
     
+    scrollFrame:SetScript("OnMouseWheel", function(self, delta)
+        local current = scrollBar:GetValue()
+        if delta > 0 then
+            scrollBar:SetValue(current - 20)
+        else
+            scrollBar:SetValue(current + 20)
+        end
+    end)
+    
+    scrollBar:SetScript("OnValueChanged", function(self, value)
+        scrollFrame:SetVerticalScroll(value)
+    end)
+    
     MPA.chatFrame = frame
-    MPA.chatFrameCreated = true
 end
 
-local function UpdateChatDisplay()
-    if not MPA.chatFrame or not MPA.chatFrame:IsShown() then return end
-    
-    local scrollChild = MPA.chatFrame.scrollChild
-    
-    -- Clear previous entries
-    local children = {scrollChild:GetChildren()}
-    for i=1, table.getn(children) do
-        children[i]:Hide()
-    end
-    
-    local totalHeight = 0
-    local entryHeight = 40
-    
-    for i=1, table.getn(MPA.portalChatLog) do
-        local entry = MPA.portalChatLog[i]
-        local entryFrame = getglobal("MPAChatEntry"..i) or CreateFrame("Frame", "MPAChatEntry"..i, scrollChild)
-        entryFrame:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -((i-1)*entryHeight))
-        entryFrame:SetWidth(340)
-        entryFrame:SetHeight(entryHeight)
-        
-        if not entryFrame.initialized then
-            -- Player name
-            local nameText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            nameText:SetPoint("TOPLEFT", entryFrame, "TOPLEFT", 5, -5)
-            nameText:SetWidth(100)
-            nameText:SetJustifyH("LEFT")
-            nameText:SetTextColor(1, 0.82, 0)
-            entryFrame.nameText = nameText
-            
-            -- Message text
-            local msgText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            msgText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
-            msgText:SetWidth(150)
-            msgText:SetJustifyH("LEFT")
-            msgText:SetTextColor(1, 1, 1)
-            entryFrame.msgText = msgText
-            
-            -- Invite button
-            local inviteButton = CreateFrame("Button", nil, entryFrame, "UIPanelButtonTemplate")
-            inviteButton:SetPoint("LEFT", msgText, "RIGHT", 5, 0)
-            inviteButton:SetWidth(60)
-            inviteButton:SetHeight(20)
-            inviteButton:SetText("Invite")
-            inviteButton:SetScript("OnClick", function()
-                InviteByName(entry.player)
-                if MPA.debug then
-                    DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Invited "..entry.player.." from chat log")
-                end
-            end)
-            
-            entryFrame.initialized = true
-        end
-        
-        entryFrame.nameText:SetText(entry.player)
-        entryFrame.msgText:SetText(string.sub(entry.message, 1, 25))
-        entryFrame:Show()
-        
-        totalHeight = i * entryHeight
-    end
-    
-    scrollChild:SetHeight(totalHeight)
-    MPA.chatFrame.scrollFrame:UpdateScrollChildRect()
-    
-    -- Auto-scroll to top
-    MPA.chatFrame.scrollFrame:SetVerticalScroll(0)
-end
+
 
 local function OnEvent()
     if not MPA.settings.enabled then return end
-    
     if event == "TRADE_ACCEPT_UPDATE" then
         if arg1 == 1 and arg2 == 1 then
             local msg = "Thanks for the tip!!"
@@ -387,21 +440,55 @@ local function OnEvent()
     elseif event == "CHAT_MSG_SAY" or event == "CHAT_MSG_YELL" then
         local message = arg1
         local playerName = arg2
-        
+        --local zoneID = arg7
         if isPortalRequest(message) then
             table.insert(MPA.portalChatLog, 1, {
                 player = playerName,
                 message = message,
                 timestamp = GetTime()
             })
-            
+            UpdateChatDisplay()
+        end
+
             if table.getn(MPA.portalChatLog) > 10 then
                 table.remove(MPA.portalChatLog, 11)
             end
             
-            if MPA.chatFrame and MPA.chatFrame:IsShown() then
-                UpdateChatDisplay()
+            if not MPA.chatFrameCreated then
+                CreateChatDisplayFrame()
+                MPA.chatFrameCreated = true
             end
+            UpdateChatDisplay()
+            
+            if MPA.debug then
+                local msg = "MPA Debug: Detected portal request in /say or /yell from "..playerName
+                if canSendMessage(msg) then
+                    DEFAULT_CHAT_FRAME:AddMessage(msg)
+                end
+            end
+
+
+        elseif event == "CHAT_MSG_CHANNEL" then
+        local message = arg1
+        local playerName = arg2
+        local channelName = arg4
+        if isPortalRequest(message) and strfind(channelName, "General") then
+            table.insert(MPA.portalChatLog, 1, {
+                player = playerName,
+                message = message,
+                timestamp = GetTime()
+            })
+            UpdateChatDisplay()
+
+            if table.getn(MPA.portalChatLog) > 10 then
+                table.remove(MPA.portalChatLog, 11)
+            end
+            
+            if not MPA.chatFrameCreated then
+                CreateChatDisplayFrame()
+                MPA.chatFrameCreated = true
+            end
+            UpdateChatDisplay()
             
             if MPA.debug then
                 local msg = "MPA Debug: Detected portal request in /say or /yell from "..playerName
@@ -531,6 +618,7 @@ local function SlashHandler(msg)
     elseif msg == "show" then
         if not MPA.chatFrameCreated then
             CreateChatDisplayFrame()
+            MPA.chatFrameCreated = true
         end
         MPA.chatFrame:Show()
         UpdateChatDisplay()
@@ -550,6 +638,7 @@ frame:RegisterEvent("TRADE_ACCEPT_UPDATE")
 frame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 frame:RegisterEvent("CHAT_MSG_SAY")
 frame:RegisterEvent("CHAT_MSG_YELL")
+frame:RegisterEvent("CHAT_MSG_CHANNEL")
 frame:SetScript("OnEvent", OnEvent)
 
 SLASH_MPA1 = "/mpa"
