@@ -7,16 +7,18 @@ MPA = {
         enabled = true,
         keywords = {
             "port", "portal", "teleport", "mage port", "mage portal",
-            "can i get a port", "need a port", "city port", "can you port"
+            "can i get a port", "need a port", "stonard", "can you port"
         },
         portalSpells = {
             ["undercity"] = "Portal: Undercity",
             ["orgrimmar"] = "Portal: Orgrimmar",
+            ["stonard"] = "Portal: Stonard",
             ["thunder bluff"] = "Portal: Thunder Bluff"
         },
         destinationAliases = {
             ["undercity"] = {"uc", "under", "underc", "undercit", "undercityy", "undercityyy", "udercity", "undercitty"},
             ["orgrimmar"] = {"org", "og", "orgri", "orgrim", "orgrimar", "orgrimmr", "orgrimar", "orgrimma", "orgimmar", "orgimmar"},
+            ["stonard"] = {"stonerd", "stonart", "stobard", "stonarf", "stonar", "stonardd", "stanard", "sunken temple"},
             ["thunder bluff"] = {"tb", "tbluff", "thunder", "bluff", "thunderbluff", "thunder bluf", "thunder blu", "thunderb", "thundr bluff", "thunder bloff"}
         },
         cooldownTime = 60,
@@ -78,22 +80,55 @@ local function UpdateChatDisplay()
                 
                 local msgText = entryFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
                 msgText:SetPoint("LEFT", nameText, "RIGHT", 5, 0)
-                msgText:SetWidth(600)
+                msgText:SetWidth(500)
                 msgText:SetJustifyH("LEFT")
                 msgText:SetTextColor(1, 1, 1)
                 entryFrame.msgText = msgText
                 
+                local whisperButton = CreateFrame("Button", nil, entryFrame, "UIPanelButtonTemplate")
+                whisperButton:SetPoint("LEFT", msgText, "RIGHT", -35, 0)
+                whisperButton:SetWidth(70)
+                whisperButton:SetHeight(20)
+                whisperButton:SetText("Whisper")
+                whisperButton.playerToWhisper = entry.player
+                
+                whisperButton:SetScript("OnClick", function()
+                    local playerName = this.playerToWhisper
+                    ChatFrame_OpenChat("/w "..playerName.." ", DEFAULT_CHAT_FRAME)
+                    if MPA.debug then
+                        DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Whispering "..playerName)
+                    end
+                end)
+                
                 local inviteButton = CreateFrame("Button", nil, entryFrame, "UIPanelButtonTemplate")
-                inviteButton:SetPoint("LEFT", msgText, "RIGHT", 5, 0)
-                inviteButton:SetWidth(60)
+                inviteButton:SetPoint("LEFT", whisperButton, "RIGHT", 5, 0)
+                inviteButton:SetWidth(70)
                 inviteButton:SetHeight(20)
                 inviteButton:SetText("Invite")
-                
                 inviteButton.playerToInvite = entry.player
+                inviteButton.destination = entry.destination
                 
                 inviteButton:SetScript("OnClick", function()
-                    local playerName = inviteButton.playerToInvite
+                    local playerName = this.playerToInvite
                     InviteByName(playerName)
+                    
+                    if this.destination then
+                        MPA.portalRequests[playerName] = {
+                            player = playerName,
+                            destination = this.destination,
+                            thanked = false,
+                            completed = false,
+                            inParty = false
+                        }
+                        
+                        if MPA.debug then
+                            local msg = "MPA Debug: Pre-set destination "..this.destination.." for "..playerName
+                            if canSendMessage(msg) then
+                                DEFAULT_CHAT_FRAME:AddMessage(msg)
+                            end
+                        end
+                    end
+                    
                     if MPA.debug then
                         DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Invited "..playerName.." from chat log")
                     end
@@ -104,8 +139,13 @@ local function UpdateChatDisplay()
                 entryFrame.nameText:SetText(entry.player)
                 entryFrame.msgText:SetText(entry.message)
                 for _, child in ipairs({entryFrame:GetChildren()}) do
-                    if child:GetObjectType() == "Button" and child:GetText() == "Invite" then
-                        child.playerToInvite = entry.player
+                    if child:GetObjectType() == "Button" then
+                        if child:GetText() == "Invite" then
+                            child.playerToInvite = entry.player
+                            child.destination = entry.destination
+                        elseif child:GetText() == "Whisper" then
+                            child.playerToWhisper = entry.player
+                        end
                     end
                 end
             end
@@ -116,10 +156,6 @@ local function UpdateChatDisplay()
     end
     
     scrollChild:SetHeight(totalHeight)
-    
-    local scrollBar = scrollFrame.scrollBar
-    scrollBar:SetMinMaxValues(0, math.max(0, totalHeight - scrollFrame:GetHeight()))
-    scrollBar:SetValue(0)
     scrollFrame:SetVerticalScroll(0)
 end
 
@@ -156,7 +192,7 @@ local function matchDestination(message)
     message = string.lower(message)
     
     local invalidDests = {
-        "ironforge", "if", "stonard", "hyjal", "stormwind", "sw", 
+        "ironforge", "if", "hyjal", "stormwind", "sw", 
         "darnassus", "dar", "exodar", "shattrath", "dalaran"
     }
     
@@ -207,85 +243,169 @@ local function CreateChatDisplayFrame()
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", function() frame:StartMoving() end)
-    frame:SetScript("OnDragStop", function() frame:StopMovingOrSizing() end)
-    frame:SetScript("OnMouseDown", function() end)
+    frame:SetScript("OnDragStart", function() this:StartMoving() end)
+    frame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
     frame:Hide()
     
+    -- Title
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", frame, "TOP", 0, -12)
-    title:SetText("Portal Requests")
+    title:SetText("Mage Portal Assistant")
     title:SetTextColor(1, 1, 1)
     
+    -- Close button
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -90, -4)
-    closeButton:SetScript("OnClick", function() frame:Hide() end)
+    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, 1)
     
+    -- Clear button
     local clearButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    clearButton:SetPoint("TOPRIGHT", closeButton, "TOPLEFT", -5, 0)
+    clearButton:SetPoint("TOPRIGHT", closeButton, "TOPLEFT", 0, -5)
     clearButton:SetWidth(80)
     clearButton:SetHeight(20)
     clearButton:SetText("Clear All")
     clearButton:SetScript("OnClick", function()
         MPA.portalChatLog = {}
         UpdateChatDisplay()
-        if MPA.debug then
-            DEFAULT_CHAT_FRAME:AddMessage("MPA Debug: Cleared all portal requests.")
-        end
     end)
+
+    -- Water and Food buttons frame
+    local waterFoodFrame = CreateFrame("Frame", "MPAWaterFoodFrame", frame)
+    waterFoodFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -10)
+    waterFoodFrame:SetWidth(150)
+    waterFoodFrame:SetHeight(180)
+
+    -- Oranges! button (Ritual of Refreshment)
+    local orangesButton = CreateFrame("Button", "MPAOrangesBtn", waterFoodFrame, "UIPanelButtonTemplate")
+    orangesButton:SetPoint("TOP", waterFoodFrame, "TOP", -40, -5)
+    orangesButton:SetWidth(80)
+    orangesButton:SetHeight(25)
+    orangesButton:SetText("Oranges!")
+    orangesButton:SetScript("OnClick", function()
+        CastSpellByName("Ritual of Refreshment")
+        SendChatMessage("BEHOLD! The Grand Buffet of the Arcane... Oranges!! ", "SAY")
+
+    end)
+
+    -- Column headers
+    local waterHeader = waterFoodFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    waterHeader:SetPoint("TOPLEFT", waterFoodFrame, "TOPLEFT", 0, -65)
+    waterHeader:SetText("Water")
+    waterHeader:SetTextColor(0.5, 0.5, 1)
     
-    local scrollFrame = CreateFrame("ScrollFrame", nil, frame)
-    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -30)
-    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -26, 8)
+    local foodHeader = waterFoodFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    foodHeader:SetPoint("TOPLEFT", waterFoodFrame, "TOPLEFT", 80, -65)
+    foodHeader:SetText("Food")
+    foodHeader:SetTextColor(1, 0.5, 0.5)
     
-    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    -- Water spells data
+    local waterSpells = {
+        {name = "Conjure Water(Rank 2)", level = "5"},
+        {name = "Conjure Water(Rank 3)", level = "15"},
+        {name = "Conjure Water(Rank 4)", level = "25"},
+        {name = "Conjure Water(Rank 5)", level = "35"},
+        {name = "Conjure Water(Rank 6)", level = "45"},
+        {name = "Conjure Water(Rank 7)", level = "55"}
+    }
+    
+    -- Food spells data
+    local foodSpells = {
+        {name = "Conjure Food(Rank 2)", level = "5"},
+        {name = "Conjure Food(Rank 3)", level = "15"},
+        {name = "Conjure Food(Rank 4)", level = "25"},
+        {name = "Conjure Food(Rank 5)", level = "35"},
+        {name = "Conjure Food(Rank 6)", level = "45"},
+        {name = "Conjure Food(Rank 7)", level = "55"}
+    }
+    
+    -- Create water buttons
+    for i, spell in ipairs(waterSpells) do
+        local btn = CreateFrame("Button", "MPAWaterBtn"..i, waterFoodFrame, "UIPanelButtonTemplate")
+        btn:SetPoint("TOPLEFT", waterFoodFrame, "TOPLEFT", 0, -((i)*22 + 55))
+        btn:SetWidth(60)
+        btn:SetHeight(20)
+        btn:SetText("Lv "..spell.level)
+        btn.spellName = spell.name
+        btn:SetScript("OnClick", function()
+            CastSpellByName(this.spellName)
+        end)
+    end
+    
+    -- Create food buttons
+    for i, spell in ipairs(foodSpells) do
+        local btn = CreateFrame("Button", "MPAFoodBtn"..i, waterFoodFrame, "UIPanelButtonTemplate")
+        btn:SetPoint("TOPLEFT", waterFoodFrame, "TOPLEFT", 80, -((i)*22 + 55))
+        btn:SetWidth(60)
+        btn:SetHeight(20)
+        btn:SetText("Lv "..spell.level)
+        btn.spellName = spell.name
+        btn:SetScript("OnClick", function()
+            CastSpellByName(this.spellName)
+        end)
+    end
+    
+    -- Scroll frame for chat messages (simplified without scroll bar)
+    local scrollFrame = CreateFrame("ScrollFrame", "MPAScrollFrame", frame)
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 170, -30)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -8, 8)
+    
+    local scrollChild = CreateFrame("Frame", "MPAScrollChild", scrollFrame)
     scrollChild:SetWidth(870)
     scrollChild:SetHeight(1)
     scrollFrame:SetScrollChild(scrollChild)
     
-    local scrollBar = CreateFrame("Slider", nil, scrollFrame, "UIPanelScrollBarTemplate")
-    scrollBar:SetPoint("TOPLEFT", scrollFrame, "TOPRIGHT", -20, -16)
-    scrollBar:SetPoint("BOTTOMRIGHT", scrollFrame, "BOTTOMRIGHT", -8, 16)
-    scrollBar:SetMinMaxValues(0, 100)
-    scrollBar:SetValueStep(1)
-    scrollBar:SetValue(0)
-    scrollBar:SetWidth(16)
-    
-    local scrollUp = CreateFrame("Button", nil, scrollBar, "UIPanelScrollUpButtonTemplate")
-    scrollUp:SetPoint("BOTTOM", scrollBar, "TOP")
-    
-    local scrollDown = CreateFrame("Button", nil, scrollBar, "UIPanelScrollDownButtonTemplate")
-    scrollDown:SetPoint("TOP", scrollBar, "BOTTOM")
-    
-    scrollFrame.scrollBar = scrollBar
-    frame.scrollFrame = scrollFrame
-    frame.scrollChild = scrollChild
-    
-    scrollFrame:SetScript("OnMouseWheel", function(self, delta)
-        local current = scrollBar:GetValue()
-        if delta > 0 then
-            scrollBar:SetValue(current - 20)
-        else
-            scrollBar:SetValue(current + 20)
-        end
-    end)
-    
-    scrollBar:SetScript("OnValueChanged", function(self, value)
-        scrollFrame:SetVerticalScroll(value)
-    end)
-    
     MPA.chatFrame = frame
+    MPA.chatFrame.scrollFrame = scrollFrame
+    MPA.chatFrame.scrollChild = scrollChild
+    MPA.chatFrameCreated = true
 end
 
-
+local function FormatMoney(copperAmount)
+    copperAmount = tonumber(copperAmount) or 0
+    
+    -- Calculate gold, silver, copper (without using %)
+    local gold = math.floor(copperAmount / 10000)
+    local remainingAfterGold = copperAmount - (gold * 10000)
+    local silver = math.floor(remainingAfterGold / 100)
+    local copper = remainingAfterGold - (silver * 100)
+    
+    -- Apply WoW's standard color codes
+    local goldText = gold > 0 and "|cffffd700"..gold.."g|r" or ""
+    local silverText = silver > 0 and "|cffc7c7cf"..silver.."s|r" or ""
+    local copperText = copper > 0 and "|cffeda55f"..copper.."c|r" or ""
+    
+    -- Combine the parts (only show non-zero values)
+    local result = ""
+    if gold > 0 then
+        result = goldText
+        if silver > 0 then result = result.." "..silverText end
+        if copper > 0 then result = result.." "..copperText end
+    elseif silver > 0 then
+        result = silverText
+        if copper > 0 then result = result.." "..copperText end
+    else
+        result = copperText
+    end
+    
+    return result
+end
 
 local function OnEvent()
     if not MPA.settings.enabled then return end
     if event == "TRADE_ACCEPT_UPDATE" then
         if arg1 == 1 and arg2 == 1 then
-            local msg = "Thanks for the tip!!"
-            if canSendMessage(msg, "PARTY") then
-                SendChatMessage(msg, "PARTY")
+            local tradeMoney = GetTargetTradeMoney()
+            if tradeMoney and tradeMoney == 0 then
+                local msg = "Enjoy!"
+                if canSendMessage(msg, "PARTY") then
+                    SendChatMessage(msg, "PARTY")
+                end
+            else if tradeMoney and tradeMoney ~= 0 then
+                local formattedMoney = FormatMoney(tradeMoney)
+                local msg = "Cha-ching! "..formattedMoney.."! Thanks for the tip!!"
+                if canSendMessage(msg, "PARTY") then
+                    SendChatMessage(msg, "PARTY")
+                end
+            end
             end
         end
         return
@@ -325,7 +445,7 @@ local function OnEvent()
         
         if MPA.playerCooldowns[playerName] and (GetTime() - MPA.playerCooldowns[playerName] < MPA.settings.cooldownTime) then
             local remaining = math.floor(MPA.settings.cooldownTime - (GetTime() - MPA.playerCooldowns[playerName]))
-            local msg = "Please wait "..remaining.." more seconds before requesting another portal."
+            --local msg = "Please wait "..remaining.." more seconds before requesting another portal."
             if canSendMessage(msg, "WHISPER") then
                 SendChatMessage(msg, "WHISPER", nil, playerName)
             end
@@ -340,7 +460,7 @@ local function OnEvent()
                 local words = {}
                 for word in string.gfind(message, "%a+") do
                     word = string.lower(word)
-                    if (word == "ironforge" or word == "stonard" or word == "hyjal" or word == "stormwind" or word == "darnassus" or 
+                    if (word == "ironforge" or word == "hyjal" or word == "stormwind" or word == "darnassus" or 
                         word == "if" or word == "sw" or word == "dar") then
                         invalidDestFound = true
                         break
@@ -367,7 +487,8 @@ local function OnEvent()
             end
             
             InviteByName(playerName)
-            
+            PlaySound("PVPTHROUGHQUEUE", "Master")
+
             MPA.portalRequests[playerName] = {
                 player = playerName,
                 destination = dest,
@@ -389,7 +510,7 @@ local function OnEvent()
                     end
                 end
             else
-                local msg = playerName..", where would you like to go? Undercity? Thunder Bluff?"
+                local msg = "Hello "..playerName.."!, where would you like to go? Undercity? Thunder Bluff? Stonard perhaps?"
                 if canSendMessage(msg, "WHISPER") then
                     SendChatMessage(msg, "WHISPER", nil, playerName)
                 end
@@ -440,45 +561,49 @@ local function OnEvent()
     elseif event == "CHAT_MSG_SAY" or event == "CHAT_MSG_YELL" then
         local message = arg1
         local playerName = arg2
-        --local zoneID = arg7
         if isPortalRequest(message) then
+            local dest = matchDestination(message)
             table.insert(MPA.portalChatLog, 1, {
                 player = playerName,
                 message = message,
+                destination = dest,
                 timestamp = GetTime()
             })
             UpdateChatDisplay()
+            PlaySound("LEVELUPSOUND", "Master")
         end
 
-            if table.getn(MPA.portalChatLog) > 10 then
-                table.remove(MPA.portalChatLog, 11)
+        if table.getn(MPA.portalChatLog) > 10 then
+            table.remove(MPA.portalChatLog, 11)
+        end
+        
+        if not MPA.chatFrameCreated then
+            CreateChatDisplayFrame()
+            MPA.chatFrameCreated = true
+        end
+        UpdateChatDisplay()
+        
+        if MPA.debug then
+            local msg = "MPA Debug: Detected portal request in /say or /yell from "..playerName
+            if canSendMessage(msg) then
+                DEFAULT_CHAT_FRAME:AddMessage(msg)
             end
-            
-            if not MPA.chatFrameCreated then
-                CreateChatDisplayFrame()
-                MPA.chatFrameCreated = true
-            end
-            UpdateChatDisplay()
-            
-            if MPA.debug then
-                local msg = "MPA Debug: Detected portal request in /say or /yell from "..playerName
-                if canSendMessage(msg) then
-                    DEFAULT_CHAT_FRAME:AddMessage(msg)
-                end
-            end
+        end
 
-
-        elseif event == "CHAT_MSG_CHANNEL" then
+    elseif event == "CHAT_MSG_CHANNEL" then
         local message = arg1
         local playerName = arg2
         local channelName = arg4
         if isPortalRequest(message) and strfind(channelName, "General") then
+            local dest = matchDestination(message)
             table.insert(MPA.portalChatLog, 1, {
                 player = playerName,
                 message = message,
+                destination = dest,
                 timestamp = GetTime()
             })
             UpdateChatDisplay()
+            PlaySound("LEVELUPSOUND", "Master")
 
             if table.getn(MPA.portalChatLog) > 10 then
                 table.remove(MPA.portalChatLog, 11)
@@ -491,7 +616,7 @@ local function OnEvent()
             UpdateChatDisplay()
             
             if MPA.debug then
-                local msg = "MPA Debug: Detected portal request in /say or /yell from "..playerName
+                local msg = "MPA Debug: Detected portal request in channel from "..playerName
                 if canSendMessage(msg) then
                     DEFAULT_CHAT_FRAME:AddMessage(msg)
                 end
@@ -552,7 +677,7 @@ local function PortalCommand()
             inParty = true
         }
         
-        local msg = lastMember..", where would you like to go? Undercity? Thunder Bluff?"
+        local msg = lastMember..", where shall I port you? UC? TB? Stonard?"
         if canSendMessage(msg, "PARTY") then
             SendChatMessage(msg, "PARTY")
         end
